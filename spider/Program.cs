@@ -1,155 +1,108 @@
 ﻿using System;
-using System.CodeDom;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
-using System.Security.Policy;
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Threading.Tasks;
 
 namespace spider
 {
     class Spider
     {
-        public string ResultText { get; private set; }
-        public string Literal { get; private set; }
-        public string Response { get; private set; }
-        public List<string> LinkList { get; private set; }
-        private string GetHtml(string urlString, Encoding encoding)
+        public struct LinkInfo
         {
-            Url url = new Url(urlString);
-            WebClient client = new WebClient();
-            client.Encoding = encoding;
-            Stream stream = client.OpenRead(urlString);
-            if (stream != null)
-            {
-                StreamReader streamReader = new StreamReader(stream, encoding);
-                return streamReader.ReadToEnd();
-            }
-            else
-            {
-                throw new InvalidDataException("Cannot get data stream.");
-            }
+            public uint Deep { get; set; }
+            public HashSet<string> Links { get; set; }
         }
-        public void GetHtmlByWebRequest(string url)
+        public HashSet<string> Links { get; private set; }
+        public Dictionary<string, LinkInfo> SearchInfos { get; private set; }
+        public void GetHtmlByWebRequest(string url, uint deep, ref ICollection<string> storeSubLink )
         {
             WebRequest request = WebRequest.Create(url);
             request.Credentials = CredentialCache.DefaultCredentials;
             HttpWebResponse response = (HttpWebResponse)request.GetResponse();
-            if (response.StatusDescription.ToUpper() == "OK")
+            if (response.StatusDescription.ToUpper() != "OK") return;
+            Encoding encoding;
+            switch (response.CharacterSet?.ToLower())
             {
-                Encoding encoding;
-                switch (response.CharacterSet.ToLower())
-                {
-                    case "gbk":
-                        encoding = Encoding.GetEncoding("GBK");
-                        break;
-                    case "gb2312":
-                        encoding = Encoding.GetEncoding("GB2312");
-                        break;
-                    case "big5":
-                        encoding = Encoding.GetEncoding("Big5");
-                        break;
-                    case "iso-8859-1":
-                        encoding = Encoding.UTF8;
-                        break;
-                    default:
-                        encoding = Encoding.UTF8;
-                        break;
-                }
-                Literal = "Length:" + response.ContentLength.ToString() + "<br>CharacterSet:" + response.CharacterSet +
-                          "<br>Header:" + response.Headers + "<br>";
-                Stream dataStream = response.GetResponseStream();
-                if (dataStream != null)
-                {
-                    StreamReader reader = new StreamReader(dataStream, encoding);
-                    string responseFromServer = reader.ReadToEnd();
-                    Response = responseFromServer;
-                    FindLink(responseFromServer);
-                    ResultText = ClearHtml(responseFromServer);
+                case "gbk":
+                    encoding = Encoding.GetEncoding("GBK");
+                    break;
+                case "gb2312":
+                    encoding = Encoding.GetEncoding("GB2312");
+                    break;
+                case "big5":
+                    encoding = Encoding.GetEncoding("Big5");
+                    break;
+                case "iso-8859-1":
+                    encoding = Encoding.UTF8;
+                    break;
+                default:
+                    encoding = Encoding.UTF8;
+                    break;
+            }
 
-                    reader.Close();
-                    dataStream.Close();
-                    response.Close();
-                }
-                else
-                {
-                    throw new InvalidDataException("Cannot get response stream.");
-                }
+            Stream dataStream = response.GetResponseStream();
+            if (dataStream != null)
+            {
+                StreamReader reader = new StreamReader(dataStream, encoding);
+                string responseFromServer = reader.ReadToEnd();
+                FindLink(url, responseFromServer, deep, ref storeSubLink);
+
+                reader.Close();
+                dataStream.Close();
             }
             else
             {
-                this.ResultText = "Error.";
+                throw new InvalidDataException("Cannot get response stream.");
             }
         }
-        private void FindLink(string Html)
+        private void FindLink(string srcUrl, string html, uint deep, ref ICollection<string> storeSubLink)
         {
-            this.LinkList = new List<string>();
-            string pattern = @"<a\s*href=(""|')(?<href>[\s\S.]*?)(""|').*?>\s*(?<name>[\s\S.]*?)</a>";
-            MatchCollection matchCollection = Regex.Matches(Html, pattern);
-            foreach (Match match in matchCollection)
+            Regex hrefPattern = new Regex(@"<a.*?href=(""|')(?<href>[\s\S.]*?)(""|').*?>");
+            MatchCollection matchCollection = hrefPattern.Matches(html);
+            Regex linkPattern = new Regex(@"^(\w*?://)?([\w-]+\.)+[\w-]+(/[\w- ./?%&=]*)?");
+            foreach (Match match in matchCollection.Cast<Match>().Where(match => match.Success && linkPattern.IsMatch(match.Groups["href"].Value)))
             {
-                if (match.Success)
+                if (!SearchInfos.ContainsKey(match.Groups["href"].Value))
                 {
-                    this.LinkList.Add($"{match.Groups["href"].Value} | {match.Groups["names"].Value}");
+                    storeSubLink.Add(match.Groups["href"].Value);
                 }
             }
         }
-        public string ClearHtml(string text)//过滤html,js,css代码
+
+        public void Start(string url, uint deepLimit)
         {
-            text = text.Trim();
-            if (string.IsNullOrEmpty(text))
-                return string.Empty;
-            text = Regex.Replace(text, "<head[^>]*>(?:.|[\r\n])*?</head>", "");
-            text = Regex.Replace(text, "<script[^>]*>(?:.|[\r\n])*?</script>", "");
-            text = Regex.Replace(text, "<style[^>]*>(?:.|[\r\n])*?</style>", "");
-
-            text = Regex.Replace(text, "(<[b|B][r|R]/*>)+|(<[p|P](.|\\n)*?>)", ""); //<br> 
-            text = Regex.Replace(text, "\\&[a-zA-Z]{1,10};", "");
-            text = Regex.Replace(text, "<[^>]*>", "");
-
-            text = Regex.Replace(text, "(\\s*&[n|N][b|B][s|S][p|P];\\s*)+", ""); //&nbsp;
-            text = Regex.Replace(text, "<(.|\\n)*?>", string.Empty); //其它任何标记
-            text = Regex.Replace(text, "[\\s]{2,}", " "); //两个或多个空格替换为一个
-
-            text = text.Replace("'", "''");
-            text = text.Replace("\r\n", "");
-            text = text.Replace("  ", "");
-            return text.Trim();
-        }
-        private void IPAddresses(string url)
-        {
-            url = url.Substring(url.IndexOf("//") + 2);
-            if (url.IndexOf("/") != -1)
+            SearchInfos = new Dictionary<string, LinkInfo>();
+            SearchInfos.Add(url, new LinkInfo() { Deep = 0 });
+            foreach (var info in SearchInfos)
             {
-                url = url.Remove(url.IndexOf("/"));
-            }
-            Literal += "<br>" + url;
-            try
-            {
-                System.Text.ASCIIEncoding ASCII = new System.Text.ASCIIEncoding();
-                IPHostEntry ipHostEntry = Dns.GetHostEntry(url);
-                System.Net.IPAddress[] ipaddress = ipHostEntry.AddressList;
-                foreach (IPAddress item in ipaddress)
+                if (info.Value.Deep < deepLimit && info.Value.Links != null)
                 {
-                    Literal += "IP:" + item;
+                    GetHtmlByWebRequest(info.Key, info.Value.Deep, ref info.Value.Links);
+                    foreach (string link in info.Value.Links)
+                    {
+                        GetHtmlByWebRequest(link, info.Value.Deep);
+                    }
                 }
-            }
-            catch
-            {
-
             }
         }
     }
     class Program
     {
-        static void Main(string[] args)
+        static void Main()
         {
             Spider spider = new Spider();
-            spider.GetHtmlByWebRequest(@"http://www.baidu.com");
+            spider.Start("http://www.baidu.com", 10);
+            foreach (var info in spider.SearchInfos)
+            {
+                Console.WriteLine($"In Link {info.Key}:");
+                foreach (string subLink in info.Value.Links)
+                {
+                    Console.WriteLine($"\t -> {subLink}");
+                }
+            }
         }
-        
     }
 }
